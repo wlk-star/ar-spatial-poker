@@ -12,6 +12,12 @@ namespace SpatialPoker.Networking
 
         private IGameTransport _transport;
 
+        public void ConfigureIdentity(string newRoomCode, string newPlayerId)
+        {
+            roomCode = newRoomCode;
+            playerId = newPlayerId;
+        }
+
         public void Bind(IGameTransport transport)
         {
             _transport = transport;
@@ -28,6 +34,9 @@ namespace SpatialPoker.Networking
             }
 
             var snapshot = synchronizer.Store.Public;
+            if (!string.IsNullOrEmpty(snapshot.roomCode))
+                roomCode = snapshot.roomCode;
+
             var action = intent.Type switch
             {
                 PokerIntentType.Fold => "FOLD",
@@ -39,8 +48,13 @@ namespace SpatialPoker.Networking
                 _ => string.Empty
             };
 
-            if (string.IsNullOrEmpty(action))
+            if (string.IsNullOrEmpty(action) ||
+                string.IsNullOrEmpty(roomCode) ||
+                string.IsNullOrEmpty(playerId) ||
+                string.IsNullOrEmpty(snapshot.handId))
+            {
                 return;
+            }
 
             var clientActionId = Guid.NewGuid().ToString("N");
 
