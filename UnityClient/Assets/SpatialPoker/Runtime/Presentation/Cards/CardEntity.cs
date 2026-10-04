@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using SpatialPoker.Interaction;
 
@@ -10,9 +11,12 @@ namespace SpatialPoker.Presentation.Cards
         [SerializeField] private InteractionPolicy policy;
         [SerializeField] private Transform homeAnchor;
         [SerializeField] private float followLerp = 20f;
+        [Min(0.01f)]
+        [SerializeField] private float returnDuration = 0.18f;
 
         private Vector3 _grabOffset;
         private bool _grabbed;
+        private Coroutine _returnRoutine;
 
         public string ObjectId => objectId;
         public string OwnerPlayerId => ownerPlayerId;
@@ -27,6 +31,12 @@ namespace SpatialPoker.Presentation.Cards
         {
             if (policy == null || policy.GrabMode == GrabMode.Disabled)
                 return GrabResult.Rejected;
+
+            if (_returnRoutine != null)
+            {
+                StopCoroutine(_returnRoutine);
+                _returnRoutine = null;
+            }
 
             _grabOffset = transform.position - context.WorldPosition;
             _grabbed = true;
@@ -61,9 +71,39 @@ namespace SpatialPoker.Presentation.Cards
             _grabbed = false;
 
             if (homeAnchor != null)
-                transform.SetPositionAndRotation(
+                _returnRoutine = StartCoroutine(ReturnHome());
+        }
+
+        private IEnumerator ReturnHome()
+        {
+            var startPosition = transform.position;
+            var startRotation = transform.rotation;
+            var elapsed = 0f;
+
+            while (elapsed < returnDuration)
+            {
+                elapsed += Time.deltaTime;
+                var t = Mathf.Clamp01(elapsed / returnDuration);
+                var eased = 1f - Mathf.Pow(1f - t, 3f);
+
+                transform.position = Vector3.Lerp(
+                    startPosition,
                     homeAnchor.position,
-                    homeAnchor.rotation);
+                    eased);
+
+                transform.rotation = Quaternion.Slerp(
+                    startRotation,
+                    homeAnchor.rotation,
+                    eased);
+
+                yield return null;
+            }
+
+            transform.SetPositionAndRotation(
+                homeAnchor.position,
+                homeAnchor.rotation);
+
+            _returnRoutine = null;
         }
     }
 }
