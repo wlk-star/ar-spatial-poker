@@ -80,6 +80,18 @@ export class PokerRoom {
   }
 
   startHand(): void {
+    for (const player of this.engine.state.players) {
+      if (!this.connections.has(player.playerId)) {
+        player.state = "SITTING_OUT";
+      } else if (player.stack > 0 && player.state === "SITTING_OUT") {
+        player.state = "ACTIVE";
+      }
+    }
+
+    if (this.connections.size < 2) {
+      throw new Error("At least two connected players are required.");
+    }
+
     this.engine.startHand();
     this.processedActions.clear();
     this.bumpVersion("HAND_STARTED", {
