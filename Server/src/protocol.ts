@@ -56,7 +56,8 @@ export interface PublicPlayerSnapshot {
   stack: number;
   streetContribution: number;
   totalContribution: number;
-  state: "ACTIVE" | "FOLDED" | "ALL_IN" | "SITTING_OUT" | "DISCONNECTED";
+  state: "ACTIVE" | "FOLDED" | "ALL_IN" | "SITTING_OUT";
+  connected: boolean;
   holeCardCount: number;
 }
 
@@ -124,8 +125,7 @@ export type ServerMessage =
         | "STALE_VERSION"
         | "NOT_YOUR_TURN"
         | "ILLEGAL_ACTION"
-        | "INVALID_AMOUNT"
-        | "DUPLICATE_ACTION";
+        | "INVALID_AMOUNT";
       currentVersion: number;
     }
   | {
