@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using UnityEngine;
 
 namespace SpatialPoker.Interaction
@@ -39,7 +38,18 @@ namespace SpatialPoker.Interaction
                 if (hit == null)
                     continue;
 
-                var candidate = hit.GetComponentInParent<IARInteractable>();
+                var behaviours = hit.GetComponentsInParent<MonoBehaviour>(true);
+                IARInteractable candidate = null;
+
+                for (var b = 0; b < behaviours.Length; b++)
+                {
+                    if (behaviours[b] is IARInteractable resolved)
+                    {
+                        candidate = resolved;
+                        break;
+                    }
+                }
+
                 if (candidate == null)
                     continue;
 
