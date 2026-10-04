@@ -12,7 +12,7 @@ export class RoomRegistry {
     let code = this.generateCode();
     while (this.rooms.has(code)) code = this.generateCode();
 
-    const room = new PokerRoom(code);
+    const room = new PokerRoom(code, playerId);
     this.rooms.set(code, room);
 
     const joined = room.addPlayer(socket, playerId, displayName);
