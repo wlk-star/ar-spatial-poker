@@ -24,6 +24,7 @@ namespace SpatialPoker.Poker.Domain
                         Seat = 0,
                         Stack = 1990,
                         StreetContribution = 10,
+                        HasActedThisRound = false,
                         State = PlayerHandState.Active
                     },
                     new()
@@ -32,6 +33,7 @@ namespace SpatialPoker.Poker.Domain
                         Seat = 1,
                         Stack = 1980,
                         StreetContribution = 20,
+                        HasActedThisRound = false,
                         State = PlayerHandState.Active
                     }
                 }
