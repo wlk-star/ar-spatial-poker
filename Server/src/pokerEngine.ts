@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PlayerActionType } from "./protocol.js";
+import { settleState, type Payout } from "./settlement.js";
 
 export type PlayerState =
   | "ACTIVE"
@@ -160,6 +161,27 @@ export class PokerEngine {
       minRaiseTo,
       maxRaiseTo
     };
+  }
+
+  settleIfReady(): Payout[] | null {
+    if (this.state.street !== "SHOWDOWN" &&
+        this.state.street !== "SETTLEMENT") {
+      return null;
+    }
+
+    const payouts = settleState(this.state);
+
+    for (const payout of payouts) {
+      const player = this.state.players.find(p => p.playerId === payout.playerId);
+      if (player) player.stack += payout.amount;
+    }
+
+    this.state.pot = 0;
+    this.state.currentBet = 0;
+    this.state.currentActionSeat = -1;
+    this.state.street = "HAND_RESULT";
+
+    return payouts;
   }
 
   apply(playerId: string, action: PlayerActionType, amount?: number): string | null {
