@@ -208,6 +208,53 @@ namespace SpatialPoker.Poker.Domain
             return ShowdownResolver.Resolve(State, publicHoleCards);
         }
 
+        public List<Payout> SettleHand()
+        {
+            var contenders = State.Players
+                .Where(p => p.State != PlayerHandState.Folded &&
+                            p.State != PlayerHandState.SittingOut)
+                .ToList();
+
+            List<Payout> payouts;
+
+            if (contenders.Count == 1)
+            {
+                payouts = new List<Payout>
+                {
+                    new()
+                    {
+                        PlayerId = contenders[0].PlayerId,
+                        Amount = State.Pot,
+                        HandRank = default
+                    }
+                };
+            }
+            else
+            {
+                if (State.Street != PokerStreet.Showdown &&
+                    State.Street != PokerStreet.Settlement)
+                {
+                    throw new InvalidOperationException(
+                        "A contested hand can only be settled at showdown.");
+                }
+
+                payouts = ResolveShowdown();
+            }
+
+            foreach (var payout in payouts)
+            {
+                var player = State.Players.First(p => p.PlayerId == payout.PlayerId);
+                player.Stack += payout.Amount;
+            }
+
+            State.Pot = 0;
+            State.CurrentBet = 0;
+            State.CurrentActionSeat = -1;
+            State.Street = PokerStreet.HandResult;
+
+            return payouts;
+        }
+
         private void DealHoleCards(IReadOnlyList<PokerPlayerState> seated)
         {
             foreach (var player in seated)
