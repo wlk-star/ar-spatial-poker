@@ -28,6 +28,7 @@ namespace SpatialPoker.Poker.Domain
         public int Seat;
         public int Stack;
         public int StreetContribution;
+        public bool HasActedThisRound;
         public PlayerHandState State;
     }
 
