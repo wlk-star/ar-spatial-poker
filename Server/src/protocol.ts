@@ -77,10 +77,18 @@ export interface PublicGameSnapshot {
   players: PublicPlayerSnapshot[];
 }
 
+export interface LegalActionsState {
+  actions: PlayerActionType[];
+  callAmount: number;
+  minRaiseTo: number;
+  maxRaiseTo: number;
+}
+
 export interface PrivateGameState {
   playerId: string;
   holeCards: string[];
   reconnectToken: string;
+  legalActions: LegalActionsState;
 }
 
 export type ServerMessage =
