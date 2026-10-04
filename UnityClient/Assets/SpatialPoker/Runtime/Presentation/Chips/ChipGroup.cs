@@ -11,6 +11,7 @@ namespace SpatialPoker.Presentation.Chips
         [SerializeField] private InteractionPolicy policy;
         [SerializeField] private int value = 100;
         [SerializeField] private Transform homeAnchor;
+        [SerializeField] private ReleaseResolver releaseResolver;
         [SerializeField] private float followLerp = 20f;
 
         private Vector3 _grabOffset;
@@ -53,6 +54,31 @@ namespace SpatialPoker.Presentation.Chips
         public void OnRelease(in InteractionContext context)
         {
             _grabbed = false;
+
+            if (releaseResolver != null)
+            {
+                var outcome = releaseResolver.ResolveChip(transform.position);
+
+                switch (outcome.Type)
+                {
+                    case ReleaseOutcomeType.Snap:
+                        if (outcome.SnapPoint != null)
+                        {
+                            transform.SetPositionAndRotation(
+                                outcome.SnapPoint.transform.position,
+                                outcome.SnapPoint.transform.rotation);
+                        }
+                        break;
+
+                    case ReleaseOutcomeType.Return:
+                        ReturnHome();
+                        break;
+
+                    case ReleaseOutcomeType.Bet:
+                        break;
+                }
+            }
+
             Released?.Invoke(this);
         }
 
