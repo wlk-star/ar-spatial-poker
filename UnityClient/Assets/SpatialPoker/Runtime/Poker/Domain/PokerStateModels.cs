@@ -28,6 +28,7 @@ namespace SpatialPoker.Poker.Domain
         public int Seat;
         public int Stack;
         public int StreetContribution;
+        public int TotalContribution;
         public bool HasActedThisRound;
         public PlayerHandState State;
     }
@@ -37,11 +38,15 @@ namespace SpatialPoker.Poker.Domain
         public string HandId;
         public PokerStreet Street;
         public int DealerSeat;
+        public int SmallBlindSeat;
+        public int BigBlindSeat;
         public int SmallBlind;
         public int BigBlind;
         public int CurrentActionSeat;
         public int CurrentBet;
+        public int MinimumRaiseIncrement;
         public int Pot;
+        public List<PlayingCard> Board = new();
         public List<PokerPlayerState> Players = new();
     }
 }
