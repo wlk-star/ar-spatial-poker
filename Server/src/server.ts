@@ -84,23 +84,57 @@ wss.on("connection", socket => {
         return;
       }
 
+      const identity = socketPlayer.get(socket);
+      if (!identity ||
+          identity.roomCode !== message.roomCode) {
+        send(socket, {
+          type: "ERROR",
+          code: "UNAUTHENTICATED_SOCKET",
+          message: "Join the room before performing this operation."
+        });
+        return;
+      }
+
       if (message.type === "START_HAND") {
+        if (!room.isOwner(identity.playerId)) {
+          send(socket, {
+            type: "ERROR",
+            code: "OWNER_REQUIRED",
+            message: "Only the room owner can start a hand."
+          });
+          return;
+        }
+
         room.startHand();
         return;
       }
 
       if (message.type === "SYNC_REQUEST") {
-        room.sendSnapshot(message.playerId);
+        if (message.playerId !== identity.playerId) {
+          send(socket, {
+            type: "ERROR",
+            code: "PLAYER_ID_MISMATCH",
+            message: "Cannot request another player's private state."
+          });
+          return;
+        }
+
+        room.sendSnapshot(identity.playerId);
         return;
       }
 
       if (message.type === "PLAYER_ACTION") {
+        if (message.playerId !== identity.playerId) {
+          send(socket, {
+            type: "ERROR",
+            code: "PLAYER_ID_MISMATCH",
+            message: "Socket identity does not match action playerId."
+          });
+          return;
+        }
+
         const result = room.applyAction(message);
         send(socket, result);
-
-        if (result.type === "ACTION_ACCEPTED") {
-          room.broadcastSnapshots();
-        }
       }
     } catch (error) {
       send(socket, {
