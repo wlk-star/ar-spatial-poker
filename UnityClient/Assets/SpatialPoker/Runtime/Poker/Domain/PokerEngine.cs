@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 namespace SpatialPoker.Poker.Domain
@@ -10,7 +11,8 @@ namespace SpatialPoker.Poker.Domain
         NotPlayersTurn,
         PlayerNotActive,
         IllegalAction,
-        InvalidAmount
+        InvalidAmount,
+        RaiseBelowMinimum
     }
 
     public readonly struct PokerActionResult
@@ -27,11 +29,70 @@ namespace SpatialPoker.Poker.Domain
 
     public sealed class PokerEngine
     {
-        public PokerTableState State { get; }
+        private readonly Deck _deck;
+        private readonly Dictionary<string, List<PlayingCard>> _holeCards = new();
 
-        public PokerEngine(PokerTableState state)
+        public PokerTableState State { get; }
+        public IReadOnlyDictionary<string, List<PlayingCard>> HoleCards => _holeCards;
+
+        public PokerEngine(PokerTableState state, Deck deck = null)
         {
             State = state ?? throw new ArgumentNullException(nameof(state));
+            _deck = deck ?? new Deck();
+        }
+
+        public void StartNewHand(string handId)
+        {
+            var seated = State.Players
+                .Where(p => p.Stack > 0 && p.State != PlayerHandState.SittingOut)
+                .OrderBy(p => p.Seat)
+                .ToList();
+
+            if (seated.Count < 2)
+                throw new InvalidOperationException("At least two active players are required.");
+
+            State.HandId = handId;
+            State.Board.Clear();
+            State.Pot = 0;
+            State.CurrentBet = 0;
+            State.MinimumRaiseIncrement = State.BigBlind;
+            State.Street = PokerStreet.Preflop;
+
+            foreach (var player in State.Players)
+            {
+                player.StreetContribution = 0;
+                player.TotalContribution = 0;
+                player.HasActedThisRound = false;
+                player.State = player.Stack > 0
+                    ? PlayerHandState.Active
+                    : PlayerHandState.SittingOut;
+            }
+
+            _holeCards.Clear();
+            _deck.Shuffle();
+
+            State.DealerSeat = FindNextOccupiedSeat(State.DealerSeat, seated, includeCurrent: false);
+
+            if (seated.Count == 2)
+            {
+                State.SmallBlindSeat = State.DealerSeat;
+                State.BigBlindSeat = FindNextOccupiedSeat(State.DealerSeat, seated, false);
+            }
+            else
+            {
+                State.SmallBlindSeat = FindNextOccupiedSeat(State.DealerSeat, seated, false);
+                State.BigBlindSeat = FindNextOccupiedSeat(State.SmallBlindSeat, seated, false);
+            }
+
+            PostBlind(State.SmallBlindSeat, State.SmallBlind);
+            PostBlind(State.BigBlindSeat, State.BigBlind);
+            State.CurrentBet = State.Players.First(p => p.Seat == State.BigBlindSeat).StreetContribution;
+
+            DealHoleCards(seated);
+
+            State.CurrentActionSeat = seated.Count == 2
+                ? State.SmallBlindSeat
+                : FindNextOccupiedSeat(State.BigBlindSeat, seated, false);
         }
 
         public PokerActionResult Apply(string playerId, in PokerIntent intent)
@@ -77,22 +138,30 @@ namespace SpatialPoker.Poker.Domain
                 case PokerIntentType.Bet:
                 case PokerIntentType.Raise:
                 {
-                    if (intent.Amount <= State.CurrentBet)
+                    var raiseTo = intent.Amount;
+                    if (raiseTo <= State.CurrentBet)
                         return new PokerActionResult(false, PokerActionError.InvalidAmount);
 
-                    var delta = intent.Amount - player.StreetContribution;
+                    var increment = raiseTo - State.CurrentBet;
+                    var allInTarget = player.StreetContribution + player.Stack;
+                    var isAllInRaise = raiseTo == allInTarget;
+
+                    if (increment < State.MinimumRaiseIncrement && !isAllInRaise)
+                        return new PokerActionResult(false, PokerActionError.RaiseBelowMinimum);
+
+                    var delta = raiseTo - player.StreetContribution;
                     if (delta <= 0 || delta > player.Stack)
                         return new PokerActionResult(false, PokerActionError.InvalidAmount);
 
                     CommitChips(player, delta);
-                    State.CurrentBet = player.StreetContribution;
 
-                    foreach (var other in State.Players)
+                    if (increment >= State.MinimumRaiseIncrement)
                     {
-                        if (other.State == PlayerHandState.Active)
-                            other.HasActedThisRound = false;
+                        State.MinimumRaiseIncrement = increment;
+                        ResetActionFlagsExcept(player);
                     }
 
+                    State.CurrentBet = Math.Max(State.CurrentBet, player.StreetContribution);
                     player.HasActedThisRound = true;
                     ProgressAfterAction();
                     return new PokerActionResult(true);
@@ -104,20 +173,21 @@ namespace SpatialPoker.Poker.Domain
                         return new PokerActionResult(false, PokerActionError.InvalidAmount);
 
                     var oldCurrentBet = State.CurrentBet;
+                    var oldIncrement = State.MinimumRaiseIncrement;
                     CommitChips(player, player.Stack);
                     player.HasActedThisRound = true;
 
                     if (player.StreetContribution > oldCurrentBet)
                     {
+                        var increment = player.StreetContribution - oldCurrentBet;
                         State.CurrentBet = player.StreetContribution;
 
-                        foreach (var other in State.Players)
+                        if (increment >= oldIncrement)
                         {
-                            if (other.State == PlayerHandState.Active)
-                                other.HasActedThisRound = false;
+                            State.MinimumRaiseIncrement = increment;
+                            ResetActionFlagsExcept(player);
+                            player.HasActedThisRound = true;
                         }
-
-                        player.HasActedThisRound = true;
                     }
 
                     ProgressAfterAction();
@@ -129,10 +199,49 @@ namespace SpatialPoker.Poker.Domain
             }
         }
 
+        public List<Payout> ResolveShowdown()
+        {
+            var publicHoleCards = _holeCards.ToDictionary(
+                kvp => kvp.Key,
+                kvp => (IReadOnlyList<PlayingCard>)kvp.Value);
+
+            return ShowdownResolver.Resolve(State, publicHoleCards);
+        }
+
+        private void DealHoleCards(IReadOnlyList<PokerPlayerState> seated)
+        {
+            foreach (var player in seated)
+                _holeCards[player.PlayerId] = new List<PlayingCard>(2);
+
+            var firstSeat = FindNextOccupiedSeat(State.DealerSeat, seated, false);
+
+            for (var round = 0; round < 2; round++)
+            {
+                var seat = firstSeat;
+                for (var i = 0; i < seated.Count; i++)
+                {
+                    var player = seated.First(p => p.Seat == seat);
+                    _holeCards[player.PlayerId].Add(_deck.Draw());
+                    seat = FindNextOccupiedSeat(seat, seated, false);
+                }
+            }
+        }
+
+        private void PostBlind(int seat, int blind)
+        {
+            var player = State.Players.First(p => p.Seat == seat);
+            CommitChips(player, Math.Min(blind, player.Stack));
+
+            if (player.Stack == 0)
+                player.State = PlayerHandState.AllIn;
+        }
+
         private void CommitChips(PokerPlayerState player, int amount)
         {
+            amount = Math.Max(0, Math.Min(amount, player.Stack));
             player.Stack -= amount;
             player.StreetContribution += amount;
+            player.TotalContribution += amount;
             State.Pot += amount;
 
             if (player.Stack == 0)
@@ -164,15 +273,15 @@ namespace SpatialPoker.Poker.Domain
 
         private bool IsBettingRoundComplete()
         {
-            foreach (var player in State.Players)
-            {
-                if (player.State == PlayerHandState.Folded ||
-                    player.State == PlayerHandState.SittingOut ||
-                    player.State == PlayerHandState.AllIn)
-                {
-                    continue;
-                }
+            var active = State.Players
+                .Where(p => p.State == PlayerHandState.Active && p.Stack > 0)
+                .ToList();
 
+            if (active.Count == 0)
+                return true;
+
+            foreach (var player in active)
+            {
                 if (!player.HasActedThisRound)
                     return false;
 
@@ -185,16 +294,36 @@ namespace SpatialPoker.Poker.Domain
 
         private void AdvanceStreet()
         {
-            State.Street = State.Street switch
+            switch (State.Street)
             {
-                PokerStreet.Preflop => PokerStreet.Flop,
-                PokerStreet.Flop => PokerStreet.Turn,
-                PokerStreet.Turn => PokerStreet.River,
-                PokerStreet.River => PokerStreet.Showdown,
-                _ => State.Street
-            };
+                case PokerStreet.Preflop:
+                    _deck.Burn();
+                    State.Board.Add(_deck.Draw());
+                    State.Board.Add(_deck.Draw());
+                    State.Board.Add(_deck.Draw());
+                    State.Street = PokerStreet.Flop;
+                    break;
+
+                case PokerStreet.Flop:
+                    _deck.Burn();
+                    State.Board.Add(_deck.Draw());
+                    State.Street = PokerStreet.Turn;
+                    break;
+
+                case PokerStreet.Turn:
+                    _deck.Burn();
+                    State.Board.Add(_deck.Draw());
+                    State.Street = PokerStreet.River;
+                    break;
+
+                case PokerStreet.River:
+                    State.Street = PokerStreet.Showdown;
+                    State.CurrentActionSeat = -1;
+                    return;
+            }
 
             State.CurrentBet = 0;
+            State.MinimumRaiseIncrement = State.BigBlind;
 
             foreach (var player in State.Players)
             {
@@ -202,18 +331,58 @@ namespace SpatialPoker.Poker.Domain
                 player.HasActedThisRound = false;
             }
 
-            if (State.Street == PokerStreet.Showdown)
+            var actionable = State.Players
+                .Where(p => p.State == PlayerHandState.Active && p.Stack > 0)
+                .OrderBy(p => p.Seat)
+                .ToList();
+
+            if (actionable.Count <= 1)
             {
-                State.CurrentActionSeat = -1;
+                RunBoardToShowdownIfNeeded();
                 return;
             }
 
-            var next = State.Players
-                .Where(p => p.State == PlayerHandState.Active && p.Stack > 0)
-                .OrderBy(p => p.Seat)
-                .FirstOrDefault();
+            State.CurrentActionSeat = FindNextOccupiedSeat(
+                State.DealerSeat,
+                actionable,
+                false);
+        }
 
-            State.CurrentActionSeat = next?.Seat ?? -1;
+        private void RunBoardToShowdownIfNeeded()
+        {
+            while (State.Street != PokerStreet.Showdown)
+            {
+                if (State.Street == PokerStreet.Preflop)
+                {
+                    _deck.Burn();
+                    State.Board.Add(_deck.Draw());
+                    State.Board.Add(_deck.Draw());
+                    State.Board.Add(_deck.Draw());
+                    State.Street = PokerStreet.Flop;
+                }
+                else if (State.Street == PokerStreet.Flop)
+                {
+                    _deck.Burn();
+                    State.Board.Add(_deck.Draw());
+                    State.Street = PokerStreet.Turn;
+                }
+                else if (State.Street == PokerStreet.Turn)
+                {
+                    _deck.Burn();
+                    State.Board.Add(_deck.Draw());
+                    State.Street = PokerStreet.River;
+                }
+                else if (State.Street == PokerStreet.River)
+                {
+                    State.Street = PokerStreet.Showdown;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            State.CurrentActionSeat = -1;
         }
 
         private void AdvanceTurn()
@@ -225,14 +394,43 @@ namespace SpatialPoker.Poker.Domain
 
             if (actionable.Count == 0)
             {
-                State.CurrentActionSeat = -1;
+                RunBoardToShowdownIfNeeded();
                 return;
             }
 
-            var next = actionable.FirstOrDefault(p => p.Seat > State.CurrentActionSeat)
-                       ?? actionable[0];
+            State.CurrentActionSeat = FindNextOccupiedSeat(
+                State.CurrentActionSeat,
+                actionable,
+                false);
+        }
 
-            State.CurrentActionSeat = next.Seat;
+        private void ResetActionFlagsExcept(PokerPlayerState actor)
+        {
+            foreach (var player in State.Players)
+            {
+                if (player.State == PlayerHandState.Active)
+                    player.HasActedThisRound = false;
+            }
+
+            actor.HasActedThisRound = true;
+        }
+
+        private static int FindNextOccupiedSeat(
+            int fromSeat,
+            IReadOnlyList<PokerPlayerState> players,
+            bool includeCurrent)
+        {
+            var ordered = players.OrderBy(p => p.Seat).ToList();
+
+            if (includeCurrent)
+            {
+                var current = ordered.FirstOrDefault(p => p.Seat == fromSeat);
+                if (current != null)
+                    return current.Seat;
+            }
+
+            var next = ordered.FirstOrDefault(p => p.Seat > fromSeat);
+            return next?.Seat ?? ordered[0].Seat;
         }
     }
 }
