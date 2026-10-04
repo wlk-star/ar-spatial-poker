@@ -50,14 +50,16 @@ namespace SpatialPoker.Poker.Domain
             {
                 case PokerIntentType.Fold:
                     player.State = PlayerHandState.Folded;
-                    AdvanceTurn();
+                    player.HasActedThisRound = true;
+                    ProgressAfterAction();
                     return new PokerActionResult(true);
 
                 case PokerIntentType.Check:
                     if (player.StreetContribution != State.CurrentBet)
                         return new PokerActionResult(false, PokerActionError.IllegalAction);
 
-                    AdvanceTurn();
+                    player.HasActedThisRound = true;
+                    ProgressAfterAction();
                     return new PokerActionResult(true);
 
                 case PokerIntentType.Call:
@@ -67,7 +69,8 @@ namespace SpatialPoker.Poker.Domain
                         return new PokerActionResult(false, PokerActionError.IllegalAction);
 
                     CommitChips(player, Math.Min(needed, player.Stack));
-                    AdvanceTurn();
+                    player.HasActedThisRound = true;
+                    ProgressAfterAction();
                     return new PokerActionResult(true);
                 }
 
@@ -83,7 +86,15 @@ namespace SpatialPoker.Poker.Domain
 
                     CommitChips(player, delta);
                     State.CurrentBet = player.StreetContribution;
-                    AdvanceTurn();
+
+                    foreach (var other in State.Players)
+                    {
+                        if (other.State == PlayerHandState.Active)
+                            other.HasActedThisRound = false;
+                    }
+
+                    player.HasActedThisRound = true;
+                    ProgressAfterAction();
                     return new PokerActionResult(true);
                 }
 
@@ -92,10 +103,24 @@ namespace SpatialPoker.Poker.Domain
                     if (player.Stack <= 0)
                         return new PokerActionResult(false, PokerActionError.InvalidAmount);
 
+                    var oldCurrentBet = State.CurrentBet;
                     CommitChips(player, player.Stack);
-                    player.State = PlayerHandState.AllIn;
-                    State.CurrentBet = Math.Max(State.CurrentBet, player.StreetContribution);
-                    AdvanceTurn();
+                    player.HasActedThisRound = true;
+
+                    if (player.StreetContribution > oldCurrentBet)
+                    {
+                        State.CurrentBet = player.StreetContribution;
+
+                        foreach (var other in State.Players)
+                        {
+                            if (other.State == PlayerHandState.Active)
+                                other.HasActedThisRound = false;
+                        }
+
+                        player.HasActedThisRound = true;
+                    }
+
+                    ProgressAfterAction();
                     return new PokerActionResult(true);
                 }
 
@@ -112,6 +137,83 @@ namespace SpatialPoker.Poker.Domain
 
             if (player.Stack == 0)
                 player.State = PlayerHandState.AllIn;
+        }
+
+        private void ProgressAfterAction()
+        {
+            var contenders = State.Players
+                .Where(p => p.State != PlayerHandState.Folded &&
+                            p.State != PlayerHandState.SittingOut)
+                .ToList();
+
+            if (contenders.Count <= 1)
+            {
+                State.CurrentActionSeat = -1;
+                State.Street = PokerStreet.Settlement;
+                return;
+            }
+
+            if (IsBettingRoundComplete())
+            {
+                AdvanceStreet();
+                return;
+            }
+
+            AdvanceTurn();
+        }
+
+        private bool IsBettingRoundComplete()
+        {
+            foreach (var player in State.Players)
+            {
+                if (player.State == PlayerHandState.Folded ||
+                    player.State == PlayerHandState.SittingOut ||
+                    player.State == PlayerHandState.AllIn)
+                {
+                    continue;
+                }
+
+                if (!player.HasActedThisRound)
+                    return false;
+
+                if (player.StreetContribution != State.CurrentBet)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private void AdvanceStreet()
+        {
+            State.Street = State.Street switch
+            {
+                PokerStreet.Preflop => PokerStreet.Flop,
+                PokerStreet.Flop => PokerStreet.Turn,
+                PokerStreet.Turn => PokerStreet.River,
+                PokerStreet.River => PokerStreet.Showdown,
+                _ => State.Street
+            };
+
+            State.CurrentBet = 0;
+
+            foreach (var player in State.Players)
+            {
+                player.StreetContribution = 0;
+                player.HasActedThisRound = false;
+            }
+
+            if (State.Street == PokerStreet.Showdown)
+            {
+                State.CurrentActionSeat = -1;
+                return;
+            }
+
+            var next = State.Players
+                .Where(p => p.State == PlayerHandState.Active && p.Stack > 0)
+                .OrderBy(p => p.Seat)
+                .FirstOrDefault();
+
+            State.CurrentActionSeat = next?.Seat ?? -1;
         }
 
         private void AdvanceTurn()
