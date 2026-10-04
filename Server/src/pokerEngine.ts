@@ -5,8 +5,7 @@ export type PlayerState =
   | "ACTIVE"
   | "FOLDED"
   | "ALL_IN"
-  | "SITTING_OUT"
-  | "DISCONNECTED";
+  | "SITTING_OUT";
 
 export interface Player {
   playerId: string;
@@ -109,6 +108,58 @@ export class PokerEngine {
       seated.length === 2
         ? this.state.smallBlindSeat
         : this.nextSeat(this.state.bigBlindSeat, seated);
+  }
+
+  legalActions(playerId: string): {
+    actions: PlayerActionType[];
+    callAmount: number;
+    minRaiseTo: number;
+    maxRaiseTo: number;
+  } {
+    const player = this.state.players.find(p => p.playerId === playerId);
+
+    if (!player ||
+        player.state !== "ACTIVE" ||
+        player.seat !== this.state.currentActionSeat) {
+      return {
+        actions: [],
+        callAmount: 0,
+        minRaiseTo: 0,
+        maxRaiseTo: 0
+      };
+    }
+
+    const callAmount = Math.max(
+      0,
+      this.state.currentBet - player.streetContribution
+    );
+
+    const maxRaiseTo = player.streetContribution + player.stack;
+    const minRaiseTo = this.state.currentBet === 0
+      ? Math.min(maxRaiseTo, this.state.bigBlind)
+      : Math.min(
+          maxRaiseTo,
+          this.state.currentBet + this.state.minimumRaiseIncrement
+        );
+
+    const actions: PlayerActionType[] = ["FOLD"];
+
+    if (callAmount === 0) {
+      actions.push("CHECK");
+      if (player.stack > 0) actions.push("BET");
+    } else {
+      actions.push("CALL");
+      if (maxRaiseTo > this.state.currentBet) actions.push("RAISE");
+    }
+
+    if (player.stack > 0) actions.push("ALL_IN");
+
+    return {
+      actions,
+      callAmount: Math.min(callAmount, player.stack),
+      minRaiseTo,
+      maxRaiseTo
+    };
   }
 
   apply(playerId: string, action: PlayerActionType, amount?: number): string | null {
