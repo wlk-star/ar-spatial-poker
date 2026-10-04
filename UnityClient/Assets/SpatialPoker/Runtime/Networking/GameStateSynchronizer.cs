@@ -15,6 +15,12 @@ namespace SpatialPoker.Networking
 
         public event Action ResyncRequested;
 
+        public void ConfigureIdentity(string newRoomCode, string newPlayerId)
+        {
+            roomCode = newRoomCode;
+            playerId = newPlayerId;
+        }
+
         public void Bind(IGameTransport transport)
         {
             if (_transport != null)
@@ -39,11 +45,20 @@ namespace SpatialPoker.Networking
 
             var type = ExtractType(json);
 
-            if (type == "GAME_SNAPSHOT")
+            if (type == "GAME_SNAPSHOT" ||
+                type == "ROOM_CREATED" ||
+                type == "ROOM_JOINED")
             {
                 var envelope = JsonUtility.FromJson<GameSnapshotEnvelopeDto>(json);
                 if (envelope?.snapshot == null)
                     return;
+
+                roomCode = envelope.snapshot.roomCode;
+                if (envelope.privateState != null &&
+                    !string.IsNullOrEmpty(envelope.privateState.playerId))
+                {
+                    playerId = envelope.privateState.playerId;
+                }
 
                 Store.Replace(envelope.snapshot, envelope.privateState);
                 return;
