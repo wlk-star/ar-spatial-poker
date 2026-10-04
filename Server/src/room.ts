@@ -147,6 +147,13 @@ export class PokerRoom {
       amount: message.amount ?? 0
     });
 
+    const payouts = this.engine.settleIfReady();
+    if (payouts) {
+      this.bumpVersion("HAND_SETTLED", {
+        payouts
+      });
+    }
+
     const accepted: ServerMessage = {
       type: "ACTION_ACCEPTED",
       clientActionId: message.clientActionId,
