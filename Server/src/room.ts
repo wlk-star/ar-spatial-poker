@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import WebSocket from "ws";
-import { PokerEngine, type Player } from "./pokerEngine.js";
+import { PokerEngine } from "./pokerEngine.js";
 import type {
   PlayerActionMessage,
   PrivateGameState,
@@ -15,16 +15,22 @@ interface ConnectionState {
 
 export class PokerRoom {
   readonly code: string;
+  readonly ownerPlayerId: string;
   readonly engine: PokerEngine;
 
   private version = 0;
   private connections = new Map<string, ConnectionState>();
   private reconnectTokens = new Map<string, string>();
-  private processedActions = new Set<string>();
+  private processedActions = new Map<string, ServerMessage>();
 
-  constructor(code: string) {
+  constructor(code: string, ownerPlayerId: string) {
     this.code = code;
+    this.ownerPlayerId = ownerPlayerId;
     this.engine = new PokerEngine();
+  }
+
+  isOwner(playerId: string): boolean {
+    return playerId === this.ownerPlayerId;
   }
 
   addPlayer(
@@ -40,8 +46,6 @@ export class PokerRoom {
       if (!expected || expected !== reconnectToken) {
         throw new Error("Invalid reconnect token");
       }
-
-      if (player.state === "DISCONNECTED") player.state = "ACTIVE";
     } else {
       const seat = this.nextFreeSeat();
       const token = this.createReconnectToken();
@@ -71,31 +75,21 @@ export class PokerRoom {
   }
 
   disconnect(playerId: string): void {
-    this.connections.delete(playerId);
-    const player = this.engine.state.players.find(p => p.playerId === playerId);
-
-    if (player && player.state === "ACTIVE") {
-      player.state = "DISCONNECTED";
-      this.bumpVersion("PLAYER_DISCONNECTED", { playerId });
-    }
+    if (!this.connections.delete(playerId)) return;
+    this.bumpVersion("PLAYER_DISCONNECTED", { playerId });
   }
 
   startHand(): void {
     this.engine.startHand();
+    this.processedActions.clear();
     this.bumpVersion("HAND_STARTED", {
       handId: this.engine.state.handId
     });
   }
 
   applyAction(message: PlayerActionMessage): ServerMessage {
-    if (this.processedActions.has(message.clientActionId)) {
-      return {
-        type: "ACTION_REJECTED",
-        clientActionId: message.clientActionId,
-        reason: "DUPLICATE_ACTION",
-        currentVersion: this.version
-      };
-    }
+    const previous = this.processedActions.get(message.clientActionId);
+    if (previous) return previous;
 
     if (message.handId !== this.engine.state.handId) {
       return {
@@ -135,18 +129,20 @@ export class PokerRoom {
       };
     }
 
-    this.processedActions.add(message.clientActionId);
     this.bumpVersion("PLAYER_ACTION_ACCEPTED", {
       playerId: message.playerId,
       action: message.action,
       amount: message.amount ?? 0
     });
 
-    return {
+    const accepted: ServerMessage = {
       type: "ACTION_ACCEPTED",
       clientActionId: message.clientActionId,
       version: this.version
     };
+
+    this.processedActions.set(message.clientActionId, accepted);
+    return accepted;
   }
 
   sendSnapshot(playerId: string): void {
@@ -167,8 +163,20 @@ export class PokerRoom {
     reconnectToken: string,
     created: boolean
   ): void {
+    if (created) {
+      this.send(socket, {
+        type: "ROOM_CREATED",
+        roomCode: this.code,
+        seat,
+        reconnectToken,
+        snapshot: this.publicSnapshot(),
+        privateState: this.privateState(playerId)
+      });
+      return;
+    }
+
     this.send(socket, {
-      type: created ? "ROOM_CREATED" : "ROOM_JOINED",
+      type: "ROOM_JOINED",
       roomCode: this.code,
       seat,
       reconnectToken,
@@ -222,6 +230,7 @@ export class PokerRoom {
         streetContribution: p.streetContribution,
         totalContribution: p.totalContribution,
         state: p.state,
+        connected: this.connections.has(p.playerId),
         holeCardCount: p.holeCards.length
       }))
     };
