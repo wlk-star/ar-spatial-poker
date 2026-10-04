@@ -242,7 +242,8 @@ export class PokerRoom {
     return {
       playerId,
       holeCards: player ? [...player.holeCards] : [],
-      reconnectToken: this.reconnectTokens.get(playerId) ?? ""
+      reconnectToken: this.reconnectTokens.get(playerId) ?? "",
+      legalActions: this.engine.legalActions(playerId)
     };
   }
 
