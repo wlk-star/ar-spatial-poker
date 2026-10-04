@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using SpatialPoker.Interaction;
 
@@ -14,6 +15,8 @@ namespace SpatialPoker.Presentation.Chips
 
         private Vector3 _grabOffset;
         private bool _grabbed;
+
+        public event Action<ChipGroup> Released;
 
         public int Value => value;
         public string ObjectId => objectId;
@@ -50,6 +53,7 @@ namespace SpatialPoker.Presentation.Chips
         public void OnRelease(in InteractionContext context)
         {
             _grabbed = false;
+            Released?.Invoke(this);
         }
 
         public void ReturnHome()
