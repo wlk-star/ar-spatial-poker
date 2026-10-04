@@ -1,6 +1,7 @@
 using System.Collections;
 using UnityEngine;
 using SpatialPoker.Interaction;
+using SpatialPoker.Poker;
 
 namespace SpatialPoker.Presentation.Cards
 {
@@ -10,6 +11,9 @@ namespace SpatialPoker.Presentation.Cards
         [SerializeField] private string ownerPlayerId;
         [SerializeField] private InteractionPolicy policy;
         [SerializeField] private Transform homeAnchor;
+        [SerializeField] private ReleaseResolver releaseResolver;
+        [SerializeField] private MonoBehaviour pokerIntentSinkBehaviour;
+        [SerializeField] private bool allowFoldGesture = true;
         [SerializeField] private float followLerp = 20f;
         [Min(0.01f)]
         [SerializeField] private float returnDuration = 0.18f;
@@ -17,6 +21,9 @@ namespace SpatialPoker.Presentation.Cards
         private Vector3 _grabOffset;
         private bool _grabbed;
         private Coroutine _returnRoutine;
+
+        private IPokerIntentSink IntentSink =>
+            pokerIntentSinkBehaviour as IPokerIntentSink;
 
         public string ObjectId => objectId;
         public string OwnerPlayerId => ownerPlayerId;
@@ -70,14 +77,58 @@ namespace SpatialPoker.Presentation.Cards
         {
             _grabbed = false;
 
-            if (homeAnchor != null)
-                _returnRoutine = StartCoroutine(ReturnHome());
+            if (policy != null && policy.GrabMode == GrabMode.Cosmetic)
+            {
+                StartReturn(homeAnchor);
+                return;
+            }
+
+            if (releaseResolver == null)
+            {
+                StartReturn(homeAnchor);
+                return;
+            }
+
+            var outcome = releaseResolver.ResolveCard(
+                transform.position,
+                allowFoldGesture);
+
+            switch (outcome.Type)
+            {
+                case ReleaseOutcomeType.Fold:
+                    IntentSink?.Submit(PokerIntent.Fold());
+                    StartReturn(homeAnchor);
+                    break;
+
+                case ReleaseOutcomeType.Snap:
+                    StartReturn(outcome.SnapPoint != null
+                        ? outcome.SnapPoint.transform
+                        : homeAnchor);
+                    break;
+
+                default:
+                    StartReturn(homeAnchor);
+                    break;
+            }
         }
 
-        private IEnumerator ReturnHome()
+        private void StartReturn(Transform target)
+        {
+            if (target == null)
+                return;
+
+            if (_returnRoutine != null)
+                StopCoroutine(_returnRoutine);
+
+            _returnRoutine = StartCoroutine(ReturnTo(target));
+        }
+
+        private IEnumerator ReturnTo(Transform target)
         {
             var startPosition = transform.position;
             var startRotation = transform.rotation;
+            var targetPosition = target.position;
+            var targetRotation = target.rotation;
             var elapsed = 0f;
 
             while (elapsed < returnDuration)
@@ -88,20 +139,20 @@ namespace SpatialPoker.Presentation.Cards
 
                 transform.position = Vector3.Lerp(
                     startPosition,
-                    homeAnchor.position,
+                    targetPosition,
                     eased);
 
                 transform.rotation = Quaternion.Slerp(
                     startRotation,
-                    homeAnchor.rotation,
+                    targetRotation,
                     eased);
 
                 yield return null;
             }
 
             transform.SetPositionAndRotation(
-                homeAnchor.position,
-                homeAnchor.rotation);
+                targetPosition,
+                targetRotation);
 
             _returnRoutine = null;
         }
