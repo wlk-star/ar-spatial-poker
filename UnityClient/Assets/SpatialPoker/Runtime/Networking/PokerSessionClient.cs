@@ -23,6 +23,26 @@ namespace SpatialPoker.Networking
             }
 
             synchronizer?.ConfigureIdentity(RoomCode, playerId);
+            actionClient?.ConfigureIdentity(RoomCode, playerId);
+
+            if (synchronizer != null)
+                synchronizer.Store.Changed += OnStateChanged;
+        }
+
+        private void OnDestroy()
+        {
+            if (synchronizer != null)
+                synchronizer.Store.Changed -= OnStateChanged;
+        }
+
+        private void OnStateChanged()
+        {
+            var serverRoomCode = synchronizer?.Store.Public?.roomCode;
+            if (!string.IsNullOrEmpty(serverRoomCode))
+                RoomCode = serverRoomCode;
+
+            synchronizer?.ConfigureIdentity(RoomCode, playerId);
+            actionClient?.ConfigureIdentity(RoomCode, playerId);
         }
 
         public void Connect() => transport?.Connect();
@@ -47,6 +67,7 @@ namespace SpatialPoker.Networking
 
             RoomCode = roomCode;
             synchronizer?.ConfigureIdentity(RoomCode, playerId);
+            actionClient?.ConfigureIdentity(RoomCode, playerId);
 
             var tokenPart = string.IsNullOrEmpty(ReconnectToken)
                 ? string.Empty
@@ -76,6 +97,7 @@ namespace SpatialPoker.Networking
 
             RoomCode = roomCode;
             synchronizer?.ConfigureIdentity(RoomCode, playerId);
+            actionClient?.ConfigureIdentity(RoomCode, playerId);
 
             transport.Send(
                 "{\"type\":\"START_HAND\",\"roomCode\":\"" +
@@ -87,6 +109,7 @@ namespace SpatialPoker.Networking
         {
             RoomCode = synchronizer?.Store.Public?.roomCode ?? RoomCode;
             synchronizer?.ConfigureIdentity(RoomCode, playerId);
+            actionClient?.ConfigureIdentity(RoomCode, playerId);
             synchronizer?.RequestResync();
         }
 
