@@ -8,6 +8,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/SpatialPoker/Scenes/PokerInteractionLab.unity
     guid: 9ae2344b65bc24ff09944bff10433160
+  - enabled: 1
+    path: Assets/SpatialPoker/Scenes/ARPokerLab.unity
+    guid: bcfc86f5be10e46f0a0333820b76192a
   m_configObjects:
     UnityEditor.XR.ARKit.ARKitSettings: {fileID: 11400000, guid: a6840898c2cc44f719e5c8e6f928bbbb, type: 2}
     com.unity.xr.arfoundation.simulation_settings: {fileID: 11400000, guid: 6f491277aa8e4483aa87673b780a0668, type: 2}

@@ -6,6 +6,8 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.XR;
 using UnityEngine.XR.ARFoundation;
 using Unity.XR.CoreUtils;
 using SpatialPoker.App;
@@ -141,7 +143,7 @@ namespace SpatialPoker.Editor
             sessionGo.AddComponent<ARSession>();
 
             var originGo = new GameObject("XR Origin");
-            originGo.AddComponent<XROrigin>();
+            var origin = originGo.AddComponent<XROrigin>();
 
             var cameraOffset = new GameObject("Camera Offset");
             cameraOffset.transform.SetParent(originGo.transform, false);
@@ -153,10 +155,21 @@ namespace SpatialPoker.Editor
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = Color.black;
             camera.nearClipPlane = 0.05f;
-            camGo.AddComponent<ARPoseDriver>();
+            var poseDriver = camGo.AddComponent<TrackedPoseDriver>();
+            var positionAction = new InputAction(
+                "Position", binding: "<XRHMD>/centerEyePosition", expectedControlType: "Vector3");
+            positionAction.AddBinding("<HandheldARInputDevice>/devicePosition");
+            var rotationAction = new InputAction(
+                "Rotation", binding: "<XRHMD>/centerEyeRotation", expectedControlType: "Quaternion");
+            rotationAction.AddBinding("<HandheldARInputDevice>/deviceRotation");
+            poseDriver.positionInput = new InputActionProperty(positionAction);
+            poseDriver.rotationInput = new InputActionProperty(rotationAction);
             camGo.AddComponent<ARCameraManager>();
             camGo.AddComponent<ARCameraBackground>();
             camGo.AddComponent<AudioListener>();
+
+            origin.CameraFloorOffsetObject = cameraOffset;
+            origin.Camera = camera;
 
             originGo.AddComponent<ARRaycastManager>();
             var planeManager = originGo.AddComponent<ARPlaneManager>();
@@ -378,13 +391,13 @@ namespace SpatialPoker.Editor
             SetRef(holeBinder, "cardFaceTemplate", mats.cardFaceTemplate);
         }
 
-        private static void WireHud(GameObject hud, NetworkRefs net)
+        private static void WireHud(HudRefs refs, NetworkRefs net)
         {
+            var hud = refs.root;
             var legalHud = hud.AddComponent<LegalActionHud>();
             var labHud = hud.AddComponent<PokerLabHudController>();
             var serverPanel = hud.AddComponent<ServerAddressPanel>();
 
-            var refs = hud.GetComponent<HudRefs>();
             SetRef(legalHud, "gate", net.gate);
             SetRef(legalHud, "foldButton", refs.foldButton);
             SetRef(legalHud, "checkButton", refs.checkButton);
@@ -601,8 +614,9 @@ namespace SpatialPoker.Editor
             new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
         }
 
-        private sealed class HudRefs : MonoBehaviour
+        private sealed class HudRefs
         {
+            public GameObject root;
             public TMP_Text statusText;
             public TMP_Text streetText;
             public TMP_Text actorText;
@@ -619,7 +633,7 @@ namespace SpatialPoker.Editor
             public Button serverApplyButton;
         }
 
-        private static GameObject BuildHud()
+        private static HudRefs BuildHud()
         {
             var canvasGo = new GameObject("HUD");
             var canvas = canvasGo.AddComponent<Canvas>();
@@ -627,7 +641,7 @@ namespace SpatialPoker.Editor
             canvasGo.AddComponent<CanvasScaler>();
             canvasGo.AddComponent<GraphicRaycaster>();
 
-            var refs = canvasGo.AddComponent<HudRefs>();
+            var refs = new HudRefs { root = canvasGo };
 
             refs.statusText = UiLabel(canvasGo, "StatusText", new Vector2(16, -16), TextAnchor.UpperLeft);
             refs.roomCodeText = UiLabel(canvasGo, "RoomCodeText", new Vector2(16, -44), TextAnchor.UpperLeft);
@@ -704,7 +718,7 @@ namespace SpatialPoker.Editor
             refs.betAmountText = UiLabel(canvasGo, "BetAmountText", new Vector2(0, 186), TextAnchor.LowerCenter);
             refs.betAmountText.text = string.Empty;
 
-            return canvasGo;
+            return refs;
         }
 
         private static TMP_Text UiLabel(GameObject canvas, string name, Vector2 anchoredPos, TextAnchor anchor)
@@ -809,8 +823,6 @@ namespace SpatialPoker.Editor
             bg.color = new Color(0f, 0f, 0f, 0.55f);
 
             var input = go.AddComponent<TMP_InputField>();
-            input.fontAsset = TMP_Settings.defaultFontAsset;
-            input.pointSize = 22;
 
             var textArea = new GameObject("Text Area", typeof(RectTransform));
             textArea.transform.SetParent(go.transform, false);
@@ -829,6 +841,8 @@ namespace SpatialPoker.Editor
             input.textViewport = areaRect;
             input.textComponent = text;
             input.placeholder = placeholder;
+            input.fontAsset = TMP_Settings.defaultFontAsset;
+            input.pointSize = 22;
             return input;
         }
 

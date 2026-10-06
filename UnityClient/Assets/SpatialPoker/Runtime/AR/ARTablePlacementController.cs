@@ -25,7 +25,7 @@ namespace SpatialPoker.AR
         [SerializeField] private Transform sceneTableRoot;
         [SerializeField] private bool hidePlanesAfterPlacement = true;
         [SerializeField] private bool faceCameraOnPlace = true;
-        [SerializeField] private Vector3 editorFallbackPosition = new Vector3(0f, 0f, -1.2f);
+        [SerializeField] private Vector3 editorFallbackPosition = new Vector3(0f, -0.45f, 1.2f);
 
         private static readonly List<ARRaycastHit> Hits = new();
 
@@ -54,7 +54,8 @@ namespace SpatialPoker.AR
             // Editor lab (and unsupported devices) stay usable.
             if (sceneTableRoot != null && IsArPermanentlyUnavailable())
             {
-                PlaceAt(new Pose(editorFallbackPosition, Quaternion.identity));
+                var position = arCamera.transform.TransformPoint(editorFallbackPosition);
+                PlaceAt(new Pose(position, Quaternion.identity), attachAnchor: false);
                 return;
             }
 
@@ -85,15 +86,15 @@ namespace SpatialPoker.AR
 #endif
         }
 
-        private void PlaceAt(Pose pose)
+        private void PlaceAt(Pose pose, bool attachAnchor = true)
         {
             if (faceCameraOnPlace)
                 pose.rotation = YawFacingCamera(pose.position);
 
             if (sceneTableRoot != null)
-                PlaceSceneTable(pose);
+                PlaceSceneTable(pose, attachAnchor);
             else if (tableRootPrefab != null)
-                PlacePrefab(pose);
+                PlacePrefab(pose, attachAnchor);
         }
 
         private Quaternion YawFacingCamera(Vector3 tablePosition)
@@ -108,41 +109,45 @@ namespace SpatialPoker.AR
             return Quaternion.Euler(0f, yaw, 0f);
         }
 
-        private void PlaceSceneTable(Pose pose)
+        private void PlaceSceneTable(Pose pose, bool attachAnchor)
         {
             var table = sceneTableRoot;
             table.SetPositionAndRotation(pose.position, pose.rotation);
             table.gameObject.SetActive(true);
             _spawnedTable = table.gameObject;
-            AttachAnchor(pose);
+            if (attachAnchor)
+                AttachAnchor(pose);
             HidePlanes();
         }
 
-        private void PlacePrefab(Pose pose)
+        private void PlacePrefab(Pose pose, bool attachAnchor)
         {
             _spawnedTable = Instantiate(
                 tableRootPrefab,
                 pose.position,
                 pose.rotation);
-            AttachAnchor(pose);
+            if (attachAnchor)
+                AttachAnchor(pose);
             HidePlanes();
         }
 
-        private void AttachAnchor(Pose pose)
+        private async void AttachAnchor(Pose pose)
         {
             if (_anchorManager == null || _spawnedTable == null)
                 return;
 
             try
             {
-                var anchor = _anchorManager.AddAnchor(pose);
-                if (anchor != null)
-                    _spawnedTable.transform.SetParent(anchor.transform, true);
+                var result = await _anchorManager.TryAddAnchorAsync(pose);
+                if (result.status.IsSuccess() && result.value != null && _spawnedTable != null)
+                    _spawnedTable.transform.SetParent(result.value.transform, true);
+                else
+                    Debug.LogWarning("[SpatialPoker] AR anchor creation failed; keeping world placement.");
             }
             catch (System.Exception e)
             {
                 Debug.LogWarning(
-                    $"[SpatialPoker] AddAnchor failed, keeping world placement: {e.Message}");
+                    $"[SpatialPoker] Anchor creation failed, keeping world placement: {e.Message}");
             }
         }
 
