@@ -11,13 +11,18 @@ namespace SpatialPoker.Debugging
         private void OnEnable()
         {
             if (bettingZone != null)
-                bettingZone.IntentCreated += Submit;
+                bettingZone.IntentCreated += OnIntentCreated;
         }
 
         private void OnDisable()
         {
             if (bettingZone != null)
-                bettingZone.IntentCreated -= Submit;
+                bettingZone.IntentCreated -= OnIntentCreated;
+        }
+
+        private void OnIntentCreated(PokerIntent intent)
+        {
+            Submit(intent);
         }
 
         public void Submit(in PokerIntent intent)
