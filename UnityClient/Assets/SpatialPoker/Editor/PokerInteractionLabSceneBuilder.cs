@@ -6,7 +6,10 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
+using UnityEngine.XR.ARFoundation;
+using Unity.XR.CoreUtils;
 using SpatialPoker.App;
+using SpatialPoker.AR;
 using SpatialPoker.HandTracking;
 using SpatialPoker.Interaction;
 using SpatialPoker.Networking;
@@ -17,18 +20,40 @@ using SpatialPoker.UI;
 namespace SpatialPoker.Editor
 {
     /// <summary>
-    /// One-click builder for the Editor Networked Poker Lab scene.
-    /// Menu: SpatialPoker/Build PokerInteractionLab Scene.
-    /// Creates the hierarchy, primitives, HUD and wires every serialized
-    /// reference explicitly and creates the procedural table/card/chip art.
-    /// Run it in the already-open Unity Editor, then press Play with the Node server running.
+    /// One-click builders for the poker lab scenes.
+    /// <list type="bullet">
+    /// <item>Menu SpatialPoker/Build PokerInteractionLab Scene: fixed-camera Editor
+    /// lab with mouse hand-tracking (existing behavior).</item>
+    /// <item>Menu SpatialPoker/Build AR Poker Scene: phone AR scene with
+    /// AR Session + XR Origin, tap-to-place table via
+    /// <see cref="ARTablePlacementController"/>, same network/table/HUD stack.
+    /// In the Editor (no AR hardware) the table drops at a fixed pose so the
+    /// scene stays usable.</item>
+    /// </list>
+    /// Both builders create the procedural table/card/chip art materials and
+    /// wire every serialized reference explicitly. For the AR scene, press Play
+    /// with the Node server reachable (set the server address in the HUD on the
+    /// phone; 127.0.0.1 won't work there).
     /// </summary>
     public static class PokerInteractionLabSceneBuilder
     {
         private const string ScenePath = "Assets/SpatialPoker/Scenes/PokerInteractionLab.unity";
+        private const string ARScenePath = "Assets/SpatialPoker/Scenes/ARPokerLab.unity";
+        private const string ARPlanePrefabPath = "Assets/SpatialPoker/Prefabs/ARPlane.prefab";
 
         [MenuItem("SpatialPoker/Build PokerInteractionLab Scene")]
         public static void Build()
+        {
+            BuildScene(ScenePath, arMode: false);
+        }
+
+        [MenuItem("SpatialPoker/Build AR Poker Scene")]
+        public static void BuildARScene()
+        {
+            BuildScene(ARScenePath, arMode: true);
+        }
+
+        private static void BuildScene(string scenePath, bool arMode)
         {
             var scene = EditorSceneManager.NewScene(
                 NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
@@ -38,50 +63,224 @@ namespace SpatialPoker.Editor
             var mats = EnsureMaterials();
             TuneLighting();
 
-            var camera = Object.FindFirstObjectByType<Camera>();
-            camera.transform.SetPositionAndRotation(
-                new Vector3(0f, 2.2f, -2.8f), Quaternion.Euler(38f, 0f, 0f));
-            camera.fieldOfView = 25f;
-            camera.clearFlags = CameraClearFlags.SolidColor;
-            camera.backgroundColor = new Color(0.055f, 0.085f, 0.11f);
+            Camera camera;
+            ARTablePlacementController placement = null;
+            if (arMode)
+            {
+                var defaultCam = GameObject.Find("Main Camera");
+                if (defaultCam != null)
+                    Object.DestroyImmediate(defaultCam);
+                camera = BuildARFoundation(out placement);
+            }
+            else
+            {
+                camera = Object.FindFirstObjectByType<Camera>();
+                camera.transform.SetPositionAndRotation(
+                    new Vector3(0f, 2.2f, -2.8f), Quaternion.Euler(38f, 0f, 0f));
+                camera.fieldOfView = 25f;
+                camera.clearFlags = CameraClearFlags.SolidColor;
+                camera.backgroundColor = new Color(0.055f, 0.085f, 0.11f);
+            }
 
             // ---------- Network stack ----------
-            var network = new GameObject("Network");
-            var transport = network.AddComponent<ClientWebSocketTransport>();
-            var synchronizer = network.AddComponent<GameStateSynchronizer>();
-            var actionClient = network.AddComponent<PokerActionClient>();
-            var session = network.AddComponent<PokerSessionClient>();
-            var gate = network.AddComponent<LegalActionGate>();
-            var normalizer = network.AddComponent<PokerIntentNormalizer>();
-            var sink = network.AddComponent<LegalActionIntentSink>();
-            var bridge = network.AddComponent<PokerActionBridge>();
-
-            SetRef(session, "transport", transport);
-            SetRef(session, "synchronizer", synchronizer);
-            SetRef(session, "actionClient", actionClient);
-            SetRef(actionClient, "synchronizer", synchronizer);
-            SetRef(gate, "synchronizer", synchronizer);
-            SetRef(normalizer, "gate", gate);
-            SetRef(normalizer, "downstreamSinkBehaviour", sink);
-            SetRef(sink, "gate", gate);
-            SetRef(sink, "downstreamSinkBehaviour", actionClient);
-            SetRef(bridge, "intentSinkBehaviour", normalizer);
-            SetRef(bridge, "gate", gate);
+            var net = BuildNetworkStack();
 
             // ---------- Lab bootstrap ----------
             var bootstrapGo = new GameObject("LabBootstrap");
             var bootstrap = bootstrapGo.AddComponent<LocalPokerLabBootstrap>();
-            SetRef(bootstrap, "session", session);
-            SetRef(bootstrap, "synchronizer", synchronizer);
+            SetRef(bootstrap, "session", net.session);
+            SetRef(bootstrap, "synchronizer", net.synchronizer);
 
             // ---------- Table ----------
+            var table = BuildTable(mats);
+            var tableTopTransform = table.tableTop.transform;
+            if (arMode)
+            {
+                // Placed by tap via ARTablePlacementController (or at the
+                // fallback pose in the Editor).
+                table.tableRoot.SetActive(false);
+                SetRef(placement, "arCamera", camera);
+                SetRef(placement, "sceneTableRoot", table.tableRoot.transform);
+            }
+
+            // ---------- Interaction ----------
+            if (!arMode)
+            {
+                var interaction = new GameObject("Interaction");
+                var resolver = interaction.AddComponent<InteractionResolver>();
+                var snapManager = interaction.AddComponent<SnapManager>();
+                var gestureController = interaction.AddComponent<GestureInteractionController>();
+                var mouseProvider = interaction.AddComponent<MockMouseHandTrackingProvider>();
+
+                SetRef(gestureController, "provider", mouseProvider);
+                SetRef(gestureController, "resolver", resolver);
+                SetRef(mouseProvider, "interactionCamera", camera);
+                SetRef(mouseProvider, "interactionPlane", tableTopTransform);
+            }
+
+            // ---------- Presentation ----------
+            BuildPresentation(net, table, mats);
+
+            // ---------- HUD ----------
+            var hud = BuildHud();
+            WireHud(hud, net);
+
+            // ---------- Save ----------
+            SaveScene(scene, scenePath);
+            Debug.Log($"[SpatialPoker] {(arMode ? "AR" : "Lab")} scene built at {scenePath}. " +
+                      (arMode
+                          ? "On a phone, set the server address in the HUD, tap a detected plane to place the table."
+                          : "Start the Node server (npm start), press Play, and use the mouse to pinch."));
+        }
+
+        // ----- AR foundation -----
+
+        private static Camera BuildARFoundation(out ARTablePlacementController placement)
+        {
+            var sessionGo = new GameObject("AR Session");
+            sessionGo.AddComponent<ARSession>();
+
+            var originGo = new GameObject("XR Origin");
+            originGo.AddComponent<XROrigin>();
+
+            var cameraOffset = new GameObject("Camera Offset");
+            cameraOffset.transform.SetParent(originGo.transform, false);
+
+            var camGo = new GameObject("Main Camera");
+            camGo.tag = "MainCamera";
+            camGo.transform.SetParent(cameraOffset.transform, false);
+            var camera = camGo.AddComponent<Camera>();
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = Color.black;
+            camera.nearClipPlane = 0.05f;
+            camGo.AddComponent<ARPoseDriver>();
+            camGo.AddComponent<ARCameraManager>();
+            camGo.AddComponent<ARCameraBackground>();
+            camGo.AddComponent<AudioListener>();
+
+            originGo.AddComponent<ARRaycastManager>();
+            var planeManager = originGo.AddComponent<ARPlaneManager>();
+            planeManager.planePrefab = EnsureARPlanePrefab();
+            originGo.AddComponent<ARAnchorManager>();
+            originGo.AddComponent<TrackingStateGuard>();
+
+            placement = originGo.AddComponent<ARTablePlacementController>();
+            return camera;
+        }
+
+        private static GameObject EnsureARPlanePrefab()
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(ARPlanePrefabPath);
+            if (prefab != null)
+                return prefab;
+
+            EnsureFolder("Assets/SpatialPoker/Prefabs");
+            var go = new GameObject("ARPlane");
+            go.AddComponent<MeshFilter>();
+            var renderer = go.AddComponent<MeshRenderer>();
+            renderer.sharedMaterial = EnsureARPlaneMaterial();
+            go.AddComponent<ARPlane>();
+            go.AddComponent<ARPlaneMeshVisualizer>();
+            prefab = PrefabUtility.SaveAsPrefabAsset(go, ARPlanePrefabPath);
+            Object.DestroyImmediate(go);
+            return prefab;
+        }
+
+        private static Material EnsureARPlaneMaterial()
+        {
+            const string path = "Assets/SpatialPoker/Materials/Table/ARPlane.mat";
+            EnsureFolder("Assets/SpatialPoker/Materials/Table");
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (mat == null)
+            {
+                mat = new Material(Shader.Find("Standard"));
+                AssetDatabase.CreateAsset(mat, path);
+                mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+            }
+
+            mat.SetFloat("_Mode", 3f); // Transparent
+            mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            mat.SetInt("_ZWrite", 0);
+            mat.DisableKeyword("_ALPHATEST_ON");
+            mat.EnableKeyword("_ALPHABLEND_ON");
+            mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            mat.renderQueue = 3000;
+            mat.color = new Color(0.35f, 0.65f, 1f, 0.22f);
+            mat.SetFloat("_Metallic", 0f);
+            mat.SetFloat("_Glossiness", 0.6f);
+            EditorUtility.SetDirty(mat);
+            return mat;
+        }
+
+        // ----- extracted build steps -----
+
+        private sealed class NetworkRefs
+        {
+            public ClientWebSocketTransport transport;
+            public GameStateSynchronizer synchronizer;
+            public PokerActionClient actionClient;
+            public PokerSessionClient session;
+            public LegalActionGate gate;
+            public PokerIntentNormalizer normalizer;
+            public LegalActionIntentSink sink;
+            public PokerActionBridge bridge;
+        }
+
+        private static NetworkRefs BuildNetworkStack()
+        {
+            var net = new NetworkRefs();
+            var network = new GameObject("Network");
+            net.transport = network.AddComponent<ClientWebSocketTransport>();
+            net.synchronizer = network.AddComponent<GameStateSynchronizer>();
+            net.actionClient = network.AddComponent<PokerActionClient>();
+            net.session = network.AddComponent<PokerSessionClient>();
+            net.gate = network.AddComponent<LegalActionGate>();
+            net.normalizer = network.AddComponent<PokerIntentNormalizer>();
+            net.sink = network.AddComponent<LegalActionIntentSink>();
+            net.bridge = network.AddComponent<PokerActionBridge>();
+
+            SetRef(net.session, "transport", net.transport);
+            SetRef(net.session, "synchronizer", net.synchronizer);
+            SetRef(net.session, "actionClient", net.actionClient);
+            SetRef(net.actionClient, "synchronizer", net.synchronizer);
+            SetRef(net.gate, "synchronizer", net.synchronizer);
+            SetRef(net.normalizer, "gate", net.gate);
+            SetRef(net.normalizer, "downstreamSinkBehaviour", net.sink);
+            SetRef(net.sink, "gate", net.gate);
+            SetRef(net.sink, "downstreamSinkBehaviour", net.actionClient);
+            SetRef(net.bridge, "intentSinkBehaviour", net.normalizer);
+            SetRef(net.bridge, "gate", net.gate);
+            return net;
+        }
+
+        private sealed class TableRefs
+        {
+            public GameObject tableRoot;
+            public GameObject tableTop;
+            public TMP_Text[] boardLabels;
+            public GameObject[] boardSlots;
+            public Renderer[] boardRenderers;
+            public TMP_Text potLabel;
+            public TMP_Text[] holeLabels;
+            public GameObject[] holeSlots;
+            public Renderer[] holeRenderers;
+            public GameObject[] opponentBacks;
+        }
+
+        private static TableRefs BuildTable(MaterialSet mats)
+        {
+            var table = new TableRefs();
             var tableRoot = new GameObject("TableRoot");
+            table.tableRoot = tableRoot;
+
             var tableTop = GameObject.CreatePrimitive(PrimitiveType.Cube);
             tableTop.name = "TableTop";
             tableTop.transform.SetParent(tableRoot.transform);
             tableTop.transform.localScale = new Vector3(1.4f, 0.04f, 1.0f);
             tableTop.transform.localPosition = new Vector3(0f, -0.02f, 0f);
             tableTop.GetComponent<Renderer>().sharedMaterial = mats.felt;
+            table.tableTop = tableTop;
 
             var rail = GameObject.CreatePrimitive(PrimitiveType.Cube);
             rail.name = "Rail";
@@ -93,35 +292,35 @@ namespace SpatialPoker.Editor
             // Board zone: 5 fixed community-card slots.
             var boardZone = Child(tableRoot, "PublicZone/BoardZone");
             boardZone.transform.localPosition = new Vector3(0f, 0.005f, -0.28f);
-            var boardLabels = new TMP_Text[5];
-            var boardSlots = new GameObject[5];
-            var boardRenderers = new Renderer[5];
+            table.boardLabels = new TMP_Text[5];
+            table.boardSlots = new GameObject[5];
+            table.boardRenderers = new Renderer[5];
             for (var i = 0; i < 5; i++)
             {
                 var slot = CardPrimitive(boardZone, $"BoardSlot{i}", (i - 2) * 0.075f, mats.cardFaceTemplate);
-                boardSlots[i] = slot;
-                boardRenderers[i] = slot.GetComponent<Renderer>();
-                boardLabels[i] = CardLabel(slot, $"BoardLabel{i}");
+                table.boardSlots[i] = slot;
+                table.boardRenderers[i] = slot.GetComponent<Renderer>();
+                table.boardLabels[i] = CardLabel(slot, $"BoardLabel{i}");
             }
 
             // Pot label.
             var potZone = Child(tableRoot, "PublicZone/PotZone");
             potZone.transform.localPosition = new Vector3(0f, 0.005f, -0.14f);
-            var potLabel = WorldLabel(potZone, "PotLabel", "POT 0", 0.02f, 36f, 0.011f);
+            table.potLabel = WorldLabel(potZone, "PotLabel", "POT 0", 0.02f, 36f, 0.011f);
 
             // Local seat: 2 private cards + chip home + betting zone.
             var localSeat = Child(tableRoot, "LocalSeat");
             localSeat.transform.localPosition = new Vector3(0f, 0.005f, 0.28f);
-            var holeLabels = new TMP_Text[2];
-            var holeSlots = new GameObject[2];
-            var holeRenderers = new Renderer[2];
+            table.holeLabels = new TMP_Text[2];
+            table.holeSlots = new GameObject[2];
+            table.holeRenderers = new Renderer[2];
             for (var i = 0; i < 2; i++)
             {
                 var slot = CardPrimitive(
                     localSeat, $"HoleCardSlot{(char)('A' + i)}", (i - 0.5f) * 0.075f, mats.cardFaceTemplate);
-                holeSlots[i] = slot;
-                holeRenderers[i] = slot.GetComponent<Renderer>();
-                holeLabels[i] = CardLabel(slot, $"HoleLabel{i}");
+                table.holeSlots[i] = slot;
+                table.holeRenderers[i] = slot.GetComponent<Renderer>();
+                table.holeLabels[i] = CardLabel(slot, $"HoleLabel{i}");
             }
 
             var chipHome = Child(localSeat, "ChipHome");
@@ -140,59 +339,53 @@ namespace SpatialPoker.Editor
             // Opponent seat: 2 card backs only (values never leave the server).
             var opponentSeat = Child(tableRoot, "OpponentSeat");
             opponentSeat.transform.localPosition = new Vector3(0f, 0.005f, -0.42f);
-            var opponentBacks = new GameObject[2];
+            table.opponentBacks = new GameObject[2];
             for (var i = 0; i < 2; i++)
             {
                 var back = CardPrimitive(
                     opponentSeat, $"OpponentBack{i}", (i - 0.5f) * 0.075f, mats.cardBack);
-                opponentBacks[i] = back;
+                table.opponentBacks[i] = back;
             }
 
             var opponentChipHome = Child(opponentSeat, "ChipHome");
             opponentChipHome.transform.localPosition = new Vector3(0.38f, 0f, 0f);
             BuildChipStack(opponentChipHome, new[] { mats.chipBlack, mats.chipBlue, mats.chipRed });
 
-            // ---------- Interaction ----------
-            var interaction = new GameObject("Interaction");
-            var resolver = interaction.AddComponent<InteractionResolver>();
-            var snapManager = interaction.AddComponent<SnapManager>();
-            var gestureController = interaction.AddComponent<GestureInteractionController>();
-            var mouseProvider = interaction.AddComponent<MockMouseHandTrackingProvider>();
+            return table;
+        }
 
-            SetRef(gestureController, "provider", mouseProvider);
-            SetRef(gestureController, "resolver", resolver);
-            SetRef(mouseProvider, "interactionCamera", camera);
-            SetRef(mouseProvider, "interactionPlane", tableTop.transform);
-
-            // ---------- Presentation ----------
+        private static void BuildPresentation(NetworkRefs net, TableRefs table, MaterialSet mats)
+        {
             var presentation = new GameObject("Presentation");
             var boardPresentation = presentation.AddComponent<BoardPresentation>();
             var communityBoard = presentation.AddComponent<CommunityBoardPresentation>();
             var opponentBacksPresentation = presentation.AddComponent<OpponentCardBackPresentation>();
             var holeBinder = presentation.AddComponent<LocalHoleCardsBinder>();
 
-            SetRef(boardPresentation, "potText", potLabel);
-            SetRef(communityBoard, "synchronizer", synchronizer);
-            SetRefArray(communityBoard, "cardLabels", boardLabels);
-            SetRefArray(communityBoard, "cardSlots", boardSlots);
-            SetRefArray(communityBoard, "cardRenderers", boardRenderers);
+            SetRef(boardPresentation, "potText", table.potLabel);
+            SetRef(communityBoard, "synchronizer", net.synchronizer);
+            SetRefArray(communityBoard, "cardLabels", table.boardLabels);
+            SetRefArray(communityBoard, "cardSlots", table.boardSlots);
+            SetRefArray(communityBoard, "cardRenderers", table.boardRenderers);
             SetRef(communityBoard, "cardFaceTemplate", mats.cardFaceTemplate);
-            SetRef(opponentBacksPresentation, "synchronizer", synchronizer);
-            SetRefArray(opponentBacksPresentation, "cardBacks", opponentBacks);
-            SetRef(holeBinder, "synchronizer", synchronizer);
-            SetRef(holeBinder, "firstCardText", holeLabels[0]);
-            SetRef(holeBinder, "secondCardText", holeLabels[1]);
-            SetRefArray(holeBinder, "cardSlots", holeSlots);
-            SetRefArray(holeBinder, "cardRenderers", holeRenderers);
+            SetRef(opponentBacksPresentation, "synchronizer", net.synchronizer);
+            SetRefArray(opponentBacksPresentation, "cardBacks", table.opponentBacks);
+            SetRef(holeBinder, "synchronizer", net.synchronizer);
+            SetRef(holeBinder, "firstCardText", table.holeLabels[0]);
+            SetRef(holeBinder, "secondCardText", table.holeLabels[1]);
+            SetRefArray(holeBinder, "cardSlots", table.holeSlots);
+            SetRefArray(holeBinder, "cardRenderers", table.holeRenderers);
             SetRef(holeBinder, "cardFaceTemplate", mats.cardFaceTemplate);
+        }
 
-            // ---------- HUD ----------
-            var hud = BuildHud();
+        private static void WireHud(GameObject hud, NetworkRefs net)
+        {
             var legalHud = hud.AddComponent<LegalActionHud>();
             var labHud = hud.AddComponent<PokerLabHudController>();
+            var serverPanel = hud.AddComponent<ServerAddressPanel>();
 
             var refs = hud.GetComponent<HudRefs>();
-            SetRef(legalHud, "gate", gate);
+            SetRef(legalHud, "gate", net.gate);
             SetRef(legalHud, "foldButton", refs.foldButton);
             SetRef(legalHud, "checkButton", refs.checkButton);
             SetRef(legalHud, "callButton", refs.callButton);
@@ -201,10 +394,10 @@ namespace SpatialPoker.Editor
             SetRef(legalHud, "callLabel", refs.callLabel);
             SetRef(legalHud, "betRaiseLabel", refs.betAmountText);
 
-            SetRef(labHud, "synchronizer", synchronizer);
-            SetRef(labHud, "transport", transport);
-            SetRef(labHud, "gate", gate);
-            SetRef(labHud, "bridge", bridge);
+            SetRef(labHud, "synchronizer", net.synchronizer);
+            SetRef(labHud, "transport", net.transport);
+            SetRef(labHud, "gate", net.gate);
+            SetRef(labHud, "bridge", net.bridge);
             SetRef(labHud, "statusText", refs.statusText);
             SetRef(labHud, "streetText", refs.streetText);
             SetRef(labHud, "actorText", refs.actorText);
@@ -217,20 +410,25 @@ namespace SpatialPoker.Editor
             SetRef(labHud, "callButton", refs.callButton);
             SetRef(labHud, "allInButton", refs.allInButton);
 
-            // ---------- Save ----------
-            EditorSceneManager.SaveScene(scene, ScenePath);
+            SetRef(serverPanel, "transport", net.transport);
+            SetRef(serverPanel, "session", net.session);
+            SetRef(serverPanel, "addressInput", refs.serverInput);
+            SetRef(serverPanel, "applyButton", refs.serverApplyButton);
+        }
+
+        private static void SaveScene(Scene scene, string scenePath)
+        {
+            EditorSceneManager.SaveScene(scene, scenePath);
 
             var scenes = EditorBuildSettings.scenes.ToList();
-            if (scenes.All(s => s.path != ScenePath))
+            if (scenes.All(s => s.path != scenePath))
             {
-                scenes.Add(new EditorBuildSettingsScene(ScenePath, true));
+                scenes.Add(new EditorBuildSettingsScene(scenePath, true));
                 EditorBuildSettings.scenes = scenes.ToArray();
             }
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"[SpatialPoker] Lab scene built at {ScenePath}. " +
-                      "Start the Node server (npm start), press Play, and use the mouse to pinch.");
         }
 
         private sealed class MaterialSet
@@ -417,6 +615,8 @@ namespace SpatialPoker.Editor
             public Button callButton;
             public Button allInButton;
             public TMP_Text callLabel;
+            public TMP_InputField serverInput;
+            public Button serverApplyButton;
         }
 
         private static GameObject BuildHud()
@@ -433,6 +633,10 @@ namespace SpatialPoker.Editor
             refs.roomCodeText = UiLabel(canvasGo, "RoomCodeText", new Vector2(16, -44), TextAnchor.UpperLeft);
             refs.streetText = UiLabel(canvasGo, "StreetText", new Vector2(16, -72), TextAnchor.UpperLeft);
             refs.actorText = UiLabel(canvasGo, "ActorText", new Vector2(16, -100), TextAnchor.UpperLeft);
+
+            // Server address row (top-right). Phone builds can't use 127.0.0.1.
+            refs.serverInput = UiInputField(canvasGo, "ServerInput", new Vector2(-16, -16), 320f);
+            refs.serverApplyButton = UiTopRightButton(canvasGo, "ServerApplyButton", "Apply", new Vector2(-348, -16), 110f);
 
             const float buttonWidth = 130f;
             const float buttonHeight = 56f;
@@ -555,6 +759,94 @@ namespace SpatialPoker.Editor
             tmp.text = label;
 
             return button;
+        }
+
+        private static Button UiTopRightButton(
+            GameObject canvas, string name, string label, Vector2 anchoredPos, float width)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            go.transform.SetParent(canvas.transform, false);
+            var rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(1f, 1f);
+            rect.anchorMax = new Vector2(1f, 1f);
+            rect.pivot = new Vector2(1f, 1f);
+            rect.anchoredPosition = anchoredPos;
+            rect.sizeDelta = new Vector2(width, 44f);
+
+            var image = go.AddComponent<Image>();
+            image.color = new Color(0.16f, 0.45f, 0.32f, 0.9f);
+            var button = go.AddComponent<Button>();
+
+            var labelGo = new GameObject("Label", typeof(RectTransform));
+            labelGo.transform.SetParent(go.transform, false);
+            var labelRect = labelGo.GetComponent<RectTransform>();
+            labelRect.anchorMin = Vector2.zero;
+            labelRect.anchorMax = Vector2.one;
+            labelRect.offsetMin = Vector2.zero;
+            labelRect.offsetMax = Vector2.zero;
+            var tmp = labelGo.AddComponent<TextMeshProUGUI>();
+            if (tmp.font == null)
+                tmp.font = TMP_Settings.defaultFontAsset;
+            tmp.fontSize = 22;
+            tmp.alignment = TextAlignmentOptions.Center;
+            tmp.text = label;
+
+            return button;
+        }
+
+        private static TMP_InputField UiInputField(
+            GameObject canvas, string name, Vector2 anchoredPos, float width)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            go.transform.SetParent(canvas.transform, false);
+            var rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(1f, 1f);
+            rect.anchorMax = new Vector2(1f, 1f);
+            rect.pivot = new Vector2(1f, 1f);
+            rect.anchoredPosition = anchoredPos;
+            rect.sizeDelta = new Vector2(width, 44f);
+            var bg = go.AddComponent<Image>();
+            bg.color = new Color(0f, 0f, 0f, 0.55f);
+
+            var input = go.AddComponent<TMP_InputField>();
+            input.fontAsset = TMP_Settings.defaultFontAsset;
+            input.pointSize = 22;
+
+            var textArea = new GameObject("Text Area", typeof(RectTransform));
+            textArea.transform.SetParent(go.transform, false);
+            var areaRect = textArea.GetComponent<RectTransform>();
+            areaRect.anchorMin = Vector2.zero;
+            areaRect.anchorMax = Vector2.one;
+            areaRect.offsetMin = new Vector2(10f, 6f);
+            areaRect.offsetMax = new Vector2(-10f, -6f);
+            textArea.AddComponent<RectMask2D>();
+
+            var placeholder = UiFieldText(textArea, "Placeholder", "ws://192.168.1.10:8080");
+            placeholder.color = new Color(1f, 1f, 1f, 0.4f);
+            var text = UiFieldText(textArea, "Text", string.Empty);
+            text.color = Color.white;
+
+            input.textViewport = areaRect;
+            input.textComponent = text;
+            input.placeholder = placeholder;
+            return input;
+        }
+
+        private static TMP_Text UiFieldText(GameObject parent, string name, string content)
+        {
+            var go = new GameObject(name, typeof(RectTransform));
+            go.transform.SetParent(parent.transform, false);
+            var rect = go.GetComponent<RectTransform>();
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
+            var tmp = go.AddComponent<TextMeshProUGUI>();
+            if (tmp.font == null)
+                tmp.font = TMP_Settings.defaultFontAsset;
+            tmp.fontSize = 22;
+            tmp.text = content;
+            return tmp;
         }
 
         private static Image UiImage(Transform parent, string name)
