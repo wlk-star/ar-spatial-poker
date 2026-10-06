@@ -31,6 +31,23 @@ GET /health
 }
 ```
 
+### Create local Bot room (single-client practice)
+
+```json
+{
+  "type": "CREATE_ROOM",
+  "playerId": "p1",
+  "displayName": "Alice",
+  "opponentMode": "LOCAL_BOT"
+}
+```
+
+The server seats `Dealer Bot` (`local-bot`) in the second seat, reports it
+as connected, and drives its actions from the authoritative legal-action list
+(never initiates aggression: CHECK, then CALL, then FOLD). The Bot only acts
+when the current action seat belongs to it, and a settled hand auto-starts a
+new one after a short pause while both players still have chips.
+
 ### Join room
 
 ```json

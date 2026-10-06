@@ -342,7 +342,6 @@ export class PokerEngine {
   private runBoardToShowdown(): void {
     while (this.state.street !== "SHOWDOWN") {
       this.advanceStreet();
-      if (this.state.street === "SHOWDOWN") break;
     }
     this.state.currentActionSeat = -1;
   }

@@ -40,7 +40,8 @@ wss.on("connection", socket => {
         const room = registry.createRoom(
           socket,
           message.playerId,
-          message.displayName
+          message.displayName,
+          message.opponentMode
         );
 
         socketPlayer.set(socket, {

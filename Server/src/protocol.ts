@@ -10,6 +10,7 @@ export interface CreateRoomMessage {
   type: "CREATE_ROOM";
   playerId: string;
   displayName: string;
+  opponentMode?: "LOCAL_BOT";
 }
 
 export interface JoinRoomMessage {

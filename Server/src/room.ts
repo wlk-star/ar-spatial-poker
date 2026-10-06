@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import { PokerEngine } from "./pokerEngine.js";
 import type {
   PlayerActionMessage,
+  PlayerActionType,
   PrivateGameState,
   PublicGameSnapshot,
   ServerMessage
@@ -13,20 +14,61 @@ interface ConnectionState {
   playerId: string;
 }
 
+export const LOCAL_BOT_ID = "local-bot";
+export const LOCAL_BOT_NAME = "Dealer Bot";
+const BOT_ACTION_DELAY_MS = 600;
+const RESULT_PAUSE_MS = 5000;
+
+/** Conservative Bot policy: never initiates aggression. */
+function pickConservativeAction(actions: PlayerActionType[]): PlayerActionType | null {
+  if (actions.includes("CHECK")) return "CHECK";
+  if (actions.includes("CALL")) return "CALL";
+  if (actions.includes("FOLD")) return "FOLD";
+  return null;
+}
+
 export class PokerRoom {
   readonly code: string;
   readonly ownerPlayerId: string;
+  readonly opponentMode: "LOCAL_BOT" | undefined;
   readonly engine: PokerEngine;
 
   private version = 0;
   private connections = new Map<string, ConnectionState>();
   private reconnectTokens = new Map<string, string>();
   private processedActions = new Map<string, ServerMessage>();
+  private botPlayerIds = new Set<string>();
+  private botTimer: NodeJS.Timeout | null = null;
+  private botTimerToken = 0;
+  private resultTimer: NodeJS.Timeout | null = null;
 
-  constructor(code: string, ownerPlayerId: string) {
+  constructor(code: string, ownerPlayerId: string, opponentMode?: "LOCAL_BOT") {
     this.code = code;
     this.ownerPlayerId = ownerPlayerId;
+    this.opponentMode = opponentMode;
     this.engine = new PokerEngine();
+  }
+
+  /** Seats the server-controlled Bot. Only valid for LOCAL_BOT rooms. */
+  addBot(): void {
+    if (this.opponentMode !== "LOCAL_BOT") {
+      throw new Error("Bot players are only supported in LOCAL_BOT rooms.");
+    }
+    if (this.botPlayerIds.has(LOCAL_BOT_ID)) return;
+
+    const seat = this.nextFreeSeat();
+    this.engine.state.players.push({
+      playerId: LOCAL_BOT_ID,
+      displayName: LOCAL_BOT_NAME,
+      seat,
+      stack: 2000,
+      streetContribution: 0,
+      totalContribution: 0,
+      hasActedThisRound: false,
+      state: "ACTIVE",
+      holeCards: []
+    });
+    this.botPlayerIds.add(LOCAL_BOT_ID);
   }
 
   isOwner(playerId: string): boolean {
@@ -76,11 +118,19 @@ export class PokerRoom {
 
   disconnect(playerId: string): void {
     if (!this.connections.delete(playerId)) return;
+    this.cancelBotTimer();
+    this.cancelResultTimer();
     this.bumpVersion("PLAYER_DISCONNECTED", { playerId });
   }
 
   startHand(): void {
     for (const player of this.engine.state.players) {
+      if (this.botPlayerIds.has(player.playerId)) {
+        if (player.stack > 0 && player.state === "SITTING_OUT") {
+          player.state = "ACTIVE";
+        }
+        continue;
+      }
       if (!this.connections.has(player.playerId)) {
         player.state = "SITTING_OUT";
       } else if (player.stack > 0 && player.state === "SITTING_OUT") {
@@ -88,7 +138,11 @@ export class PokerRoom {
       }
     }
 
-    if (this.connections.size < 2) {
+    const seatedCount = this.engine.state.players.filter(
+      p => this.connections.has(p.playerId) || this.botPlayerIds.has(p.playerId)
+    ).length;
+
+    if (seatedCount < 2) {
       throw new Error("At least two connected players are required.");
     }
 
@@ -97,6 +151,7 @@ export class PokerRoom {
     this.bumpVersion("HAND_STARTED", {
       handId: this.engine.state.handId
     });
+    this.maybeScheduleBot();
   }
 
   applyAction(message: PlayerActionMessage): ServerMessage {
@@ -154,6 +209,8 @@ export class PokerRoom {
       });
     }
 
+    this.maybeScheduleBot();
+
     const accepted: ServerMessage = {
       type: "ACTION_ACCEPTED",
       clientActionId: message.clientActionId,
@@ -210,6 +267,83 @@ export class PokerRoom {
     }
   }
 
+  private maybeScheduleBot(): void {
+    this.cancelBotTimer();
+    if (this.opponentMode !== "LOCAL_BOT") return;
+
+    const street = this.engine.state.street;
+    if (street !== "PREFLOP" && street !== "FLOP" && street !== "TURN" && street !== "RIVER") {
+      return;
+    }
+
+    const bot = this.engine.state.players.find(p => this.botPlayerIds.has(p.playerId));
+    if (!bot || bot.seat !== this.engine.state.currentActionSeat) return;
+
+    const token = ++this.botTimerToken;
+    const handId = this.engine.state.handId;
+    this.botTimer = setTimeout(() => this.fireBotAction(token, handId), BOT_ACTION_DELAY_MS);
+  }
+
+  private fireBotAction(token: number, handId: string | null): void {
+    if (token !== this.botTimerToken) return;
+    this.botTimer = null;
+    if (this.opponentMode !== "LOCAL_BOT") return;
+    if (handId === null || this.engine.state.handId !== handId) return;
+
+    const bot = this.engine.state.players.find(p => this.botPlayerIds.has(p.playerId));
+    if (!bot || bot.seat !== this.engine.state.currentActionSeat) return;
+
+    const legal = this.engine.legalActions(bot.playerId);
+    const action = pickConservativeAction(legal.actions);
+    if (!action) return;
+
+    const error = this.engine.apply(bot.playerId, action);
+    if (error) return;
+
+    this.bumpVersion("BOT_ACTION", { playerId: bot.playerId, action });
+
+    const payouts = this.engine.settleIfReady();
+    if (payouts) {
+      this.bumpVersion("HAND_SETTLED", { payouts });
+      this.scheduleNextHand();
+    } else {
+      this.maybeScheduleBot();
+    }
+  }
+
+  private scheduleNextHand(): void {
+    this.cancelResultTimer();
+    this.resultTimer = setTimeout(() => {
+      this.resultTimer = null;
+      try {
+        const ready = this.engine.state.players.filter(
+          p => p.stack > 0 &&
+            (this.connections.has(p.playerId) || this.botPlayerIds.has(p.playerId))
+        );
+        if (ready.length >= 2 && this.engine.state.street === "HAND_RESULT") {
+          this.startHand();
+        }
+      } catch {
+        // Room emptied or hand already running; safe to skip.
+      }
+    }, RESULT_PAUSE_MS);
+  }
+
+  private cancelBotTimer(): void {
+    this.botTimerToken++;
+    if (this.botTimer) {
+      clearTimeout(this.botTimer);
+      this.botTimer = null;
+    }
+  }
+
+  private cancelResultTimer(): void {
+    if (this.resultTimer) {
+      clearTimeout(this.resultTimer);
+      this.resultTimer = null;
+    }
+  }
+
   private bumpVersion(event: string, payload: Record<string, unknown>): void {
     this.version += 1;
 
@@ -249,7 +383,7 @@ export class PokerRoom {
         streetContribution: p.streetContribution,
         totalContribution: p.totalContribution,
         state: p.state,
-        connected: this.connections.has(p.playerId),
+        connected: this.connections.has(p.playerId) || this.botPlayerIds.has(p.playerId),
         holeCardCount: p.holeCards.length
       }))
     };

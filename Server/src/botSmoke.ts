@@ -5,7 +5,7 @@ import type { ServerMessage, PlayerActionType } from "./protocol.js";
 
 function peer() {
   const messages: ServerMessage[] = [];
-  const socket = { readyState: WebSocket.OPEN, send: (raw: string) => messages.push(JSON.parse(raw)) } as WebSocket;
+  const socket = { readyState: WebSocket.OPEN, send: (raw: string) => messages.push(JSON.parse(raw)) } as unknown as WebSocket;
   return { socket, messages };
 }
 

@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace SpatialPoker.Networking
@@ -14,10 +15,21 @@ namespace SpatialPoker.Networking
         public string ReconnectToken =>
             synchronizer?.Store.Private?.reconnectToken;
 
+        public bool IsConnected => transport != null && transport.IsConnected;
+
+        public event Action Connected;
+        public event Action Disconnected;
+        public event Action<string> RoomCreated;
+
+        private bool _roomCreatedFired;
+
         private void Awake()
         {
             if (transport != null)
             {
+                transport.Connected += OnTransportConnected;
+                transport.Disconnected += OnTransportDisconnected;
+
                 synchronizer?.Bind(transport);
                 actionClient?.Bind(transport);
             }
@@ -31,6 +43,12 @@ namespace SpatialPoker.Networking
 
         private void OnDestroy()
         {
+            if (transport != null)
+            {
+                transport.Connected -= OnTransportConnected;
+                transport.Disconnected -= OnTransportDisconnected;
+            }
+
             if (synchronizer != null)
                 synchronizer.Store.Changed -= OnStateChanged;
         }
@@ -43,9 +61,23 @@ namespace SpatialPoker.Networking
 
             synchronizer?.ConfigureIdentity(RoomCode, playerId);
             actionClient?.ConfigureIdentity(RoomCode, playerId);
+
+            if (!_roomCreatedFired && !string.IsNullOrEmpty(RoomCode))
+            {
+                _roomCreatedFired = true;
+                RoomCreated?.Invoke(RoomCode);
+            }
         }
 
-        public void Connect() => transport?.Connect();
+        private void OnTransportConnected() => Connected?.Invoke();
+
+        private void OnTransportDisconnected() => Disconnected?.Invoke();
+
+        public void Connect()
+        {
+            _roomCreatedFired = false;
+            transport?.Connect();
+        }
 
         public void CreateRoom()
         {
@@ -58,6 +90,19 @@ namespace SpatialPoker.Networking
                 "\",\"displayName\":\"" +
                 Escape(displayName) +
                 "\"}");
+        }
+
+        public void CreateLocalBotRoom()
+        {
+            if (transport == null || !transport.IsConnected)
+                return;
+
+            transport.Send(
+                "{\"type\":\"CREATE_ROOM\",\"playerId\":\"" +
+                Escape(playerId) +
+                "\",\"displayName\":\"" +
+                Escape(displayName) +
+                "\",\"opponentMode\":\"LOCAL_BOT\"}");
         }
 
         public void JoinRoom(string roomCode)

@@ -34,6 +34,19 @@ See:
 - `Docs/interaction-lab.md`
 - `Docs/architecture.md`
 
+## Editor Networked Poker Lab (Bot)
+
+One-click playable heads-up table against the server Bot:
+
+1. Start the server: `cd Server && npm install && npm start`
+2. In Unity, run menu **SpatialPoker / Build PokerInteractionLab Scene**
+3. Open `Assets/SpatialPoker/Scenes/PokerInteractionLab.unity` and press Play
+
+The bootstrap connects, creates a `LOCAL_BOT` room, and starts the hand once
+both seats are present. Mouse pinch drives the interaction pipeline; the HUD
+buttons are the fallback action path. Chip stacks can be dragged into the
+betting zone to bet.
+
 Expected first loop:
 
 ```text

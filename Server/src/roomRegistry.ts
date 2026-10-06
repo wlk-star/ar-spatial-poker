@@ -7,15 +7,19 @@ export class RoomRegistry {
   createRoom(
     socket: WebSocket,
     playerId: string,
-    displayName: string
+    displayName: string,
+    opponentMode?: "LOCAL_BOT"
   ): PokerRoom {
     let code = this.generateCode();
     while (this.rooms.has(code)) code = this.generateCode();
 
-    const room = new PokerRoom(code, playerId);
+    const room = new PokerRoom(code, playerId, opponentMode);
     this.rooms.set(code, room);
 
     const joined = room.addPlayer(socket, playerId, displayName);
+    if (opponentMode === "LOCAL_BOT") {
+      room.addBot();
+    }
     room.sendJoinEnvelope(
       socket,
       playerId,
